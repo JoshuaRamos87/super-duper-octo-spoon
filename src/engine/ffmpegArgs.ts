@@ -562,7 +562,7 @@ export function buildFfmpegCommandPlan(job: FfmpegJobInput): FfmpegCommandPlan {
       '-bufsize',
       `${Math.round(calc.videoKbps * 2)}k`,
       '-preset',
-      'veryfast',
+      settings.encodingPreset || 'veryfast',
       '-pix_fmt',
       'yuv420p',
     ];
@@ -683,7 +683,7 @@ export function buildFfmpegCommandPlan(job: FfmpegJobInput): FfmpegCommandPlan {
     '-crf',
     String(crfValue),
     '-preset',
-    'veryfast',
+    settings.encodingPreset || 'veryfast',
     '-pix_fmt',
     'yuv420p'
   );

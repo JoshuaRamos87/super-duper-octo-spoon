@@ -3,6 +3,7 @@ import type { FFmpegLoadState } from '../types/studio';
 
 interface HeaderProps {
   webCodecsReady: boolean;
+  multiThreadReady: boolean;
   ffmpegState: FFmpegLoadState;
   ffmpegStatusText: string;
   ffmpegProgressPct: number | null;
@@ -21,6 +22,7 @@ const DOT_COLOR: Record<FFmpegLoadState, string> = {
 
 export function Header({
   webCodecsReady,
+  multiThreadReady,
   ffmpegState,
   ffmpegStatusText,
   ffmpegProgressPct,
@@ -58,6 +60,15 @@ export function Header({
             >
               <Zap className="w-3.5 h-3.5" />
               <span>GPU Ready</span>
+            </div>
+          )}
+
+          {multiThreadReady && (
+            <div
+              className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-indigo-500/10 border border-indigo-500/25 text-xs text-indigo-300 font-medium"
+              title="Cross-Origin Isolated (SharedArrayBuffer active) — Multi-Threaded FFmpeg enabled"
+            >
+              <span>MT Ready</span>
             </div>
           )}
 

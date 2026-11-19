@@ -16,19 +16,43 @@ export interface EngineResult {
   engineUsed: 'ffmpeg' | 'webcodecs';
 }
 
-const CDN_CORE_URLS = [
+const CDN_ST_CORE_URLS = [
   'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.js',
   'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.js',
 ];
 
-const CDN_WASM_URLS = [
+const CDN_ST_WASM_URLS = [
   'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.wasm',
   'https://unpkg.com/@ffmpeg/core@0.12.10/dist/esm/ffmpeg-core.wasm',
 ];
 
-function getFfmpegBaseDir(): string {
+const CDN_MT_CORE_URLS = [
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm/ffmpeg-core.js',
+  'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm/ffmpeg-core.js',
+];
+
+const CDN_MT_WASM_URLS = [
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm/ffmpeg-core.wasm',
+  'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm/ffmpeg-core.wasm',
+];
+
+const CDN_MT_WORKER_URLS = [
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.10/dist/esm/ffmpeg-core.worker.js',
+  'https://unpkg.com/@ffmpeg/core-mt@0.12.10/dist/esm/ffmpeg-core.worker.js',
+];
+
+export function canUseMultiThread(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    Boolean(window.crossOriginIsolated) &&
+    typeof SharedArrayBuffer !== 'undefined'
+  );
+}
+
+function getFfmpegDir(mode: 'mt' | 'st'): string {
   const base = import.meta.env.BASE_URL || '/';
-  return base.endsWith('/') ? `${base}ffmpeg/` : `${base}/ffmpeg/`;
+  const cleanBase = base.endsWith('/') ? base : `${base}/`;
+  return mode === 'mt' ? `${cleanBase}ffmpeg-mt/` : `${cleanBase}ffmpeg/`;
 }
 
 async function fetchAsBlobURL(
@@ -74,18 +98,33 @@ async function fetchAsBlobURL(
 class FFmpegController {
   private ffmpeg: FFmpeg | null = null;
   private loadingPromise: Promise<FFmpeg> | null = null;
-  private cachedCoreURL: string | null = null;
-  private cachedWasmURL: string | null = null;
+  private activeMode: 'mt' | 'st' = canUseMultiThread() ? 'mt' : 'st';
+
+  // Cached Blob URLs per core type across runs/terminations
+  private cachedStCoreURL: string | null = null;
+  private cachedStWasmURL: string | null = null;
+  private cachedMtCoreURL: string | null = null;
+  private cachedMtWasmURL: string | null = null;
+  private cachedMtWorkerURL: string | null = null;
+
   private phaseOffset = 0;
   private phaseScale = 1;
   private cancelled = false;
   private activeLogHandler: ((msg: string) => void) | null = null;
   private activeProgressHandler: ((pct: number) => void) | null = null;
 
-  public async isWasmCached(): Promise<boolean> {
+  public getActiveMode(): 'mt' | 'st' {
+    return this.activeMode;
+  }
+
+  public isMultiThreadCapable(): boolean {
+    return canUseMultiThread();
+  }
+
+  public async isWasmCached(mode: 'mt' | 'st' = canUseMultiThread() ? 'mt' : 'st'): Promise<boolean> {
     try {
       if (typeof caches === 'undefined') return false;
-      const wasmPath = `${getFfmpegBaseDir()}ffmpeg-core.wasm`;
+      const wasmPath = `${getFfmpegDir(mode)}ffmpeg-core.wasm`;
       const match = await caches.match(wasmPath);
       return Boolean(match);
     } catch {
@@ -95,6 +134,154 @@ class FFmpegController {
 
   public isLoaded(): boolean {
     return Boolean(this.ffmpeg && this.ffmpeg.loaded);
+  }
+
+  private async bootCoreInstance(
+    mode: 'mt' | 'st',
+    onStatus: FfmpegLoadProgressCallback,
+    onLog: (msg: string) => void
+  ): Promise<FFmpeg> {
+    const stDir = getFfmpegDir('st');
+    const localClassWorkerURL = new URL(`${stDir}worker.js`, window.location.origin).href;
+
+    const dir = getFfmpegDir(mode);
+    const localCoreURL = new URL(`${dir}ffmpeg-core.js`, window.location.origin).href;
+    const localWasmURL = new URL(`${dir}ffmpeg-core.wasm`, window.location.origin).href;
+    const localPthreadWorkerURL =
+      mode === 'mt'
+        ? new URL(`${dir}ffmpeg-core.worker.js`, window.location.origin).href
+        : null;
+
+    const wasCached = await this.isWasmCached(mode);
+    const modeTag = mode === 'mt' ? 'Multi-Threaded' : 'Single-Threaded';
+
+    let coreURL: string;
+    let wasmURL: string;
+    let workerURL: string | undefined;
+
+    if (mode === 'mt') {
+      if (!this.cachedMtCoreURL || !this.cachedMtWasmURL || !this.cachedMtWorkerURL) {
+        onStatus('loading', `Preparing FFmpeg ${modeTag}...`, 8);
+        onLog(
+          wasCached
+            ? '[Loader] Loading cached FFmpeg.wasm MT core from offline storage...'
+            : '[Loader] Fetching self-hosted FFmpeg.wasm MT core (~32 MB)...'
+        );
+
+        const [mtCore, mtWorker] = await Promise.all([
+          fetchAsBlobURL([localCoreURL, ...CDN_MT_CORE_URLS], 'text/javascript', undefined, onLog),
+          fetchAsBlobURL(
+            [localPthreadWorkerURL!, ...CDN_MT_WORKER_URLS],
+            'text/javascript',
+            undefined,
+            onLog
+          ),
+        ]);
+
+        onStatus(
+          'loading',
+          wasCached ? 'Reading cached MT WASM...' : 'Downloading MT WASM (0%)',
+          15
+        );
+        const mtWasm = await fetchAsBlobURL(
+          [localWasmURL, ...CDN_MT_WASM_URLS],
+          'application/wasm',
+          (ratio) => {
+            const pct = Math.round(ratio * 100);
+            onStatus(
+              'loading',
+              wasCached ? `Loading MT WASM (${pct}%)` : `Downloading MT WASM (${pct}%)`,
+              15 + ratio * 75
+            );
+          },
+          onLog
+        );
+
+        this.cachedMtCoreURL = mtCore;
+        this.cachedMtWorkerURL = mtWorker;
+        this.cachedMtWasmURL = mtWasm;
+      } else {
+        onStatus('loading', 'Re-initializing FFmpeg MT worker...', 90);
+      }
+      coreURL = this.cachedMtCoreURL;
+      wasmURL = this.cachedMtWasmURL;
+      workerURL = this.cachedMtWorkerURL;
+    } else {
+      if (!this.cachedStCoreURL || !this.cachedStWasmURL) {
+        onStatus('loading', 'Preparing FFmpeg ST...', 8);
+        onLog(
+          wasCached
+            ? '[Loader] Loading cached FFmpeg.wasm ST core from offline storage...'
+            : '[Loader] Fetching self-hosted FFmpeg.wasm ST core (~31 MB)...'
+        );
+
+        const stCore = await fetchAsBlobURL(
+          [localCoreURL, ...CDN_ST_CORE_URLS],
+          'text/javascript',
+          undefined,
+          onLog
+        );
+
+        onStatus(
+          'loading',
+          wasCached ? 'Reading cached WASM...' : 'Downloading ST WASM (0%)',
+          15
+        );
+        const stWasm = await fetchAsBlobURL(
+          [localWasmURL, ...CDN_ST_WASM_URLS],
+          'application/wasm',
+          (ratio) => {
+            const pct = Math.round(ratio * 100);
+            onStatus(
+              'loading',
+              wasCached ? `Loading WASM (${pct}%)` : `Downloading WASM (${pct}%)`,
+              15 + ratio * 75
+            );
+          },
+          onLog
+        );
+
+        this.cachedStCoreURL = stCore;
+        this.cachedStWasmURL = stWasm;
+      } else {
+        onStatus('loading', 'Re-initializing FFmpeg ST worker...', 90);
+      }
+      coreURL = this.cachedStCoreURL;
+      wasmURL = this.cachedStWasmURL;
+    }
+
+    onStatus('loading', `Booting ${modeTag} WebAssembly...`, 94);
+    const instance = new FFmpeg();
+
+    instance.on('log', ({ message }) => {
+      if (message) this.activeLogHandler?.(message);
+    });
+
+    instance.on('progress', ({ progress }) => {
+      const clamped = Math.max(0, Math.min(1, Number(progress) || 0));
+      const globalPct = Math.min(
+        99,
+        Math.round((this.phaseOffset + clamped * this.phaseScale) * 100)
+      );
+      this.activeProgressHandler?.(globalPct);
+    });
+
+    try {
+      await instance.load({
+        classWorkerURL: localClassWorkerURL,
+        coreURL,
+        wasmURL,
+        ...(workerURL ? { workerURL } : {}),
+      });
+      return instance;
+    } catch (err) {
+      try {
+        instance.terminate();
+      } catch {
+        // Ignore cleanup errors
+      }
+      throw err;
+    }
   }
 
   public async ensureLoaded(
@@ -110,75 +297,38 @@ class FFmpegController {
 
     this.loadingPromise = (async () => {
       try {
-        const dir = getFfmpegBaseDir();
-        const localWorkerURL = new URL(`${dir}worker.js`, window.location.origin).href;
-        const localCoreURL = new URL(`${dir}ffmpeg-core.js`, window.location.origin).href;
-        const localWasmURL = new URL(`${dir}ffmpeg-core.wasm`, window.location.origin).href;
+        const preferMt = canUseMultiThread();
+        let chosenMode: 'mt' | 'st' = preferMt ? 'mt' : 'st';
+        let instance: FFmpeg;
 
-        onStatus('loading', 'Preparing FFmpeg Core...', 8);
-
-        if (!this.cachedCoreURL || !this.cachedWasmURL) {
-          const wasCached = await this.isWasmCached();
-          onLog(
-            wasCached
-              ? '[Loader] Loading cached FFmpeg.wasm core from offline storage...'
-              : '[Loader] Fetching self-hosted FFmpeg.wasm core (~31 MB)...'
-          );
-
-          const coreURL = await fetchAsBlobURL(
-            [localCoreURL, ...CDN_CORE_URLS],
-            'text/javascript',
-            undefined,
-            onLog
-          );
-
-          onStatus('loading', wasCached ? 'Reading cached WASM...' : 'Downloading WASM (0%)', 15);
-          const wasmURL = await fetchAsBlobURL(
-            [localWasmURL, ...CDN_WASM_URLS],
-            'application/wasm',
-            (ratio) => {
-              const pct = Math.round(ratio * 100);
-              onStatus(
-                'loading',
-                wasCached ? `Loading WASM (${pct}%)` : `Downloading WASM (${pct}%)`,
-                15 + ratio * 75
-              );
-            },
-            onLog
-          );
-
-          this.cachedCoreURL = coreURL;
-          this.cachedWasmURL = wasmURL;
+        if (preferMt) {
+          try {
+            instance = await this.bootCoreInstance('mt', onStatus, onLog);
+          } catch (mtErr) {
+            onLog(
+              `[Loader] Multi-threaded core unavailable (${
+                mtErr instanceof Error ? mtErr.message : String(mtErr)
+              }); falling back to single-threaded core...`
+            );
+            chosenMode = 'st';
+            instance = await this.bootCoreInstance('st', onStatus, onLog);
+          }
         } else {
-          onStatus('loading', 'Re-initializing FFmpeg worker...', 90);
+          onLog('[Loader] Cross-origin isolation inactive; using single-threaded FFmpeg core.');
+          instance = await this.bootCoreInstance('st', onStatus, onLog);
         }
 
-        onStatus('loading', 'Booting WebAssembly worker...', 94);
-        const instance = new FFmpeg();
-
-        instance.on('log', ({ message }) => {
-          if (message) this.activeLogHandler?.(message);
-        });
-
-        instance.on('progress', ({ progress }) => {
-          const clamped = Math.max(0, Math.min(1, Number(progress) || 0));
-          const globalPct = Math.min(
-            99,
-            Math.round((this.phaseOffset + clamped * this.phaseScale) * 100)
-          );
-          this.activeProgressHandler?.(globalPct);
-        });
-
-        await instance.load({
-          classWorkerURL: localWorkerURL,
-          coreURL: this.cachedCoreURL,
-          wasmURL: this.cachedWasmURL,
-        });
-
         this.ffmpeg = instance;
-        const cached = await this.isWasmCached();
-        onStatus('ready', cached ? 'FFmpeg Ready (Offline)' : 'FFmpeg Ready');
-        onLog('[Loader] FFmpeg.wasm single-threaded engine is ready.');
+        this.activeMode = chosenMode;
+
+        const cached = await this.isWasmCached(chosenMode);
+        const modePrefix = chosenMode === 'mt' ? 'FFmpeg MT' : 'FFmpeg ST';
+        onStatus('ready', cached ? `${modePrefix} Ready (Offline)` : `${modePrefix} Ready`);
+        onLog(
+          `[Loader] FFmpeg.wasm ${
+            chosenMode === 'mt' ? 'multi-threaded (pthreads)' : 'single-threaded'
+          } engine is ready.`
+        );
         return instance;
       } catch (err) {
         onStatus('error', 'FFmpeg Load Error');
@@ -279,10 +429,13 @@ class FFmpegController {
       throw new DOMException('Cancelled by user', 'AbortError');
     }
 
+    const modeLabel =
+      this.activeMode === 'mt' ? 'FFmpeg.wasm (Multi-Threaded)' : 'FFmpeg.wasm (Single-Threaded)';
+
     const file = jobInput.metadata.file;
     let inputFSPath = '';
 
-    callbacks.onProgress(2, 'Mounting file with WORKERFS...', `${file.name}`);
+    callbacks.onProgress(2, 'Mounting file with WORKERFS...', file.name);
 
     try {
       await ffmpeg.createDir(mountDir).catch(() => {});
@@ -325,7 +478,7 @@ class FFmpegController {
           plan.passes.length > 1
             ? `Pass ${i + 1}/${plan.passes.length}: ${plan.modeSummary}`
             : `Processing: ${plan.modeSummary}`;
-        currentPhaseSub = 'FFmpeg.wasm (Single-Threaded)';
+        currentPhaseSub = modeLabel;
         callbacks.onProgress(Math.round(offset * 100), currentPhaseLabel, currentPhaseSub);
         callbacks.onLog(`[Command] ffmpeg ${passArgs.join(' ')}`);
 
@@ -357,7 +510,6 @@ class FFmpegController {
       };
     } finally {
       this.activeProgressHandler = null;
-      // Clean up virtual filesystem safely even after cancellation
       if (this.ffmpeg && this.ffmpeg.loaded) {
         await this.ffmpeg.deleteFile(plan.outputFSName).catch(() => {});
         for (const extra of plan.extraCleanupFiles) {

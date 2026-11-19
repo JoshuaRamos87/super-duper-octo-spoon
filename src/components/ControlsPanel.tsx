@@ -14,6 +14,7 @@ import {
 import type {
   AudioExtractFormat,
   CustomPreset,
+  EncodingPreset,
   EnginePreference,
   ExportSettings,
   FpsCapOption,
@@ -28,6 +29,7 @@ import { calculateTargetBitrates } from '../utils/bitrate';
 import { computeEffectiveDimensions, hasActiveTransform } from '../utils/filters';
 import { PLATFORM_PRESETS } from '../utils/presets';
 import { formatBytes, getTotalSegmentsDuration } from '../utils/timecode';
+import { canUseMultiThread } from '../engine/ffmpegEngine';
 import { canUseWebCodecs } from '../engine/mediabunnyEngine';
 
 interface ControlsPanelProps {
@@ -653,58 +655,81 @@ export function ControlsPanel({
       {/* SHARED VIDEO & AUDIO ADJUSTMENTS */}
       <div className="flex flex-col gap-3">
         {showVideoControls && (
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <label className="block text-[11px] text-zinc-400 mb-1">Resolution</label>
+          <>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-[11px] text-zinc-400 mb-1">Resolution</label>
+                <select
+                  value={settings.resolution}
+                  disabled={isLosslessCopy && !editsPreventCopy}
+                  onChange={(e) => update('resolution', e.target.value as ResolutionOption)}
+                  className="w-full bg-studio-950 border border-zinc-700/80 disabled:opacity-45 rounded-xl px-2.5 py-2 text-xs text-white"
+                >
+                  <option value="original">Original</option>
+                  <option value="1080">1080p</option>
+                  <option value="720">720p</option>
+                  <option value="480">480p</option>
+                  <option value="360">360p</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] text-zinc-400 mb-1">FPS Cap</label>
+                <select
+                  value={String(settings.fpsCap)}
+                  onChange={(e) =>
+                    update(
+                      'fpsCap',
+                      e.target.value === 'original'
+                        ? 'original'
+                        : (Number(e.target.value) as FpsCapOption)
+                    )
+                  }
+                  className="w-full bg-studio-950 border border-zinc-700/80 rounded-xl px-2.5 py-2 text-xs text-white font-mono"
+                >
+                  <option value="original">Orig ({Math.round(metadata.fps || 30)})</option>
+                  <option value="60">60 fps</option>
+                  <option value="30">30 fps</option>
+                  <option value="24">24 fps</option>
+                  <option value="15">15 fps</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[11px] text-zinc-400 mb-1">Speed</label>
+                <select
+                  value={settings.speed}
+                  onChange={(e) => update('speed', Number(e.target.value))}
+                  className="w-full bg-studio-950 border border-zinc-700/80 rounded-xl px-2.5 py-2 text-xs text-white font-mono"
+                >
+                  {SPEED_OPTIONS.map((sp) => (
+                    <option key={sp} value={sp}>
+                      {sp}x
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <label
+                htmlFor="select-encode-preset"
+                className="text-xs text-zinc-300"
+                title="Controls x264 compression speed vs efficiency when encoding via FFmpeg.wasm"
+              >
+                FFmpeg Encode Speed
+              </label>
               <select
-                value={settings.resolution}
+                id="select-encode-preset"
+                value={settings.encodingPreset}
                 disabled={isLosslessCopy && !editsPreventCopy}
-                onChange={(e) => update('resolution', e.target.value as ResolutionOption)}
-                className="w-full bg-studio-950 border border-zinc-700/80 disabled:opacity-45 rounded-xl px-2.5 py-2 text-xs text-white"
+                onChange={(e) => update('encodingPreset', e.target.value as EncodingPreset)}
+                className="bg-studio-950 border border-zinc-700/80 disabled:opacity-45 rounded-xl px-3 py-1.5 text-xs text-white"
               >
-                <option value="original">Original</option>
-                <option value="1080">1080p</option>
-                <option value="720">720p</option>
-                <option value="480">480p</option>
-                <option value="360">360p</option>
+                <option value="ultrafast">Ultrafast (2× faster)</option>
+                <option value="veryfast">Veryfast (Default)</option>
+                <option value="fast">Fast (Best quality)</option>
               </select>
             </div>
-            <div>
-              <label className="block text-[11px] text-zinc-400 mb-1">FPS Cap</label>
-              <select
-                value={String(settings.fpsCap)}
-                onChange={(e) =>
-                  update(
-                    'fpsCap',
-                    e.target.value === 'original'
-                      ? 'original'
-                      : (Number(e.target.value) as FpsCapOption)
-                  )
-                }
-                className="w-full bg-studio-950 border border-zinc-700/80 rounded-xl px-2.5 py-2 text-xs text-white font-mono"
-              >
-                <option value="original">Orig ({Math.round(metadata.fps || 30)})</option>
-                <option value="60">60 fps</option>
-                <option value="30">30 fps</option>
-                <option value="24">24 fps</option>
-                <option value="15">15 fps</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-[11px] text-zinc-400 mb-1">Speed</label>
-              <select
-                value={settings.speed}
-                onChange={(e) => update('speed', Number(e.target.value))}
-                className="w-full bg-studio-950 border border-zinc-700/80 rounded-xl px-2.5 py-2 text-xs text-white font-mono"
-              >
-                {SPEED_OPTIONS.map((sp) => (
-                  <option key={sp} value={sp}>
-                    {sp}x
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+          </>
         )}
 
         {settings.mode === 'gif' && (
@@ -794,10 +819,10 @@ export function ControlsPanel({
           )}
           <span className="truncate">
             {settings.enginePreference === 'ffmpeg'
-              ? 'FFmpeg.wasm (WORKERFS)'
+              ? `FFmpeg.wasm (${canUseMultiThread() ? 'Multi-Thread' : 'Single-Thread'})`
               : wcStatus.supported
                 ? 'GPU WebCodecs Ready'
-                : `FFmpeg (${wcStatus.reason})`}
+                : `FFmpeg ${canUseMultiThread() ? 'MT' : 'ST'} (${wcStatus.reason})`}
           </span>
         </div>
         <select
@@ -807,7 +832,9 @@ export function ControlsPanel({
         >
           <option value="auto">Auto (GPU → FFmpeg)</option>
           <option value="webcodecs">WebCodecs GPU</option>
-          <option value="ffmpeg">FFmpeg.wasm</option>
+          <option value="ffmpeg">
+            {canUseMultiThread() ? 'FFmpeg.wasm (MT)' : 'FFmpeg.wasm (ST)'}
+          </option>
         </select>
       </div>
 

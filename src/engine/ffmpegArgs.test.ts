@@ -237,4 +237,52 @@ describe('buildFfmpegCommandPlan', () => {
       })
     ).toThrow(/no audio track/i);
   });
+
+  it('emits custom encodingPreset across 1-pass target, 2-pass target, and CRF modes', () => {
+    const onePassUltra = buildFfmpegCommandPlan({
+      inputFSPath: '/input/demo.mp4',
+      fileName: 'demo.mp4',
+      metadata: makeMeta(),
+      segments: [{ id: 's1', start: 0, end: 10 }],
+      transform: DEFAULT_TRANSFORM,
+      settings: {
+        ...DEFAULT_EXPORT_SETTINGS,
+        mode: 'target',
+        twoPass: false,
+        encodingPreset: 'ultrafast',
+      },
+    });
+    expect(onePassUltra.passes[0][onePassUltra.passes[0].indexOf('-preset') + 1]).toBe('ultrafast');
+
+    const twoPassFast = buildFfmpegCommandPlan({
+      inputFSPath: '/input/demo.mp4',
+      fileName: 'demo.mp4',
+      metadata: makeMeta(),
+      segments: [{ id: 's1', start: 0, end: 10 }],
+      transform: DEFAULT_TRANSFORM,
+      settings: {
+        ...DEFAULT_EXPORT_SETTINGS,
+        mode: 'target',
+        twoPass: true,
+        encodingPreset: 'fast',
+      },
+    });
+    expect(twoPassFast.passes[0][twoPassFast.passes[0].indexOf('-preset') + 1]).toBe('fast');
+    expect(twoPassFast.passes[1][twoPassFast.passes[1].indexOf('-preset') + 1]).toBe('fast');
+
+    const crfUltra = buildFfmpegCommandPlan({
+      inputFSPath: '/input/demo.mp4',
+      fileName: 'demo.mp4',
+      metadata: makeMeta(),
+      segments: [{ id: 's1', start: 0, end: 10 }],
+      transform: DEFAULT_TRANSFORM,
+      settings: {
+        ...DEFAULT_EXPORT_SETTINGS,
+        mode: 'quality',
+        qualityMode: 'crf',
+        encodingPreset: 'ultrafast',
+      },
+    });
+    expect(crfUltra.passes[0][crfUltra.passes[0].indexOf('-preset') + 1]).toBe('ultrafast');
+  });
 });

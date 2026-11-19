@@ -16,7 +16,7 @@ import {
   preloadFfmpegEngine,
   runExportJob,
 } from './engine/dispatcher';
-import { ffmpegEngine } from './engine/ffmpegEngine';
+import { canUseMultiThread, ffmpegEngine } from './engine/ffmpegEngine';
 import { hasWebCodecsAPI } from './engine/mediabunnyEngine';
 import { enrichVideoMetadata } from './engine/probe';
 import {
@@ -49,8 +49,11 @@ export function App() {
 
   // Engine / PWA status
   const webCodecsReady = useMemo(() => hasWebCodecsAPI(), []);
+  const multiThreadReady = useMemo(() => canUseMultiThread(), []);
   const [ffmpegState, setFfmpegState] = useState<FFmpegLoadState>('idle');
-  const [ffmpegStatusText, setFfmpegStatusText] = useState('FFmpeg Idle');
+  const [ffmpegStatusText, setFfmpegStatusText] = useState(() =>
+    canUseMultiThread() ? 'FFmpeg MT Idle' : 'FFmpeg ST Idle'
+  );
   const [ffmpegProgressPct, setFfmpegProgressPct] = useState<number | null>(null);
 
   // Loaded media & metadata
@@ -122,10 +125,10 @@ export function App() {
     checkInitialWasmStatus().then((status) => {
       if (status === 'cached') {
         setFfmpegState('cached');
-        setFfmpegStatusText('FFmpeg Cached');
+        setFfmpegStatusText(multiThreadReady ? 'FFmpeg MT Cached' : 'FFmpeg ST Cached');
       }
     });
-  }, []);
+  }, [multiThreadReady]);
 
   // Load a selected/dropped video file
   const handleFileSelected = useCallback(
@@ -836,11 +839,12 @@ export function App() {
         navigator.serviceWorker.controller.postMessage({ type: 'CLEAR_WASM_CACHE' }, [mc.port2]);
       }
       if (typeof caches !== 'undefined') {
+        await caches.delete('clipshrink-wasm-v2');
         await caches.delete('clipshrink-wasm-v1');
       }
       if (!ffmpegEngine.isLoaded()) {
         setFfmpegState('idle');
-        setFfmpegStatusText('FFmpeg Idle');
+        setFfmpegStatusText(multiThreadReady ? 'FFmpeg MT Idle' : 'FFmpeg ST Idle');
       }
       pushToast('Cleared offline WASM cache.', 'info');
     } catch {
@@ -890,6 +894,7 @@ export function App() {
 
       <Header
         webCodecsReady={webCodecsReady}
+        multiThreadReady={multiThreadReady}
         ffmpegState={ffmpegState}
         ffmpegStatusText={ffmpegStatusText}
         ffmpegProgressPct={ffmpegProgressPct}
@@ -1072,8 +1077,10 @@ export function App() {
 
       <footer className="border-t border-zinc-900 py-4 px-4 text-center text-[11px] text-zinc-500">
         Powered by <span className="text-zinc-300 font-medium">WebCodecs GPU</span> &amp;{' '}
-        <span className="text-zinc-300 font-medium">FFmpeg.wasm (WORKERFS)</span> • 100% local
-        browser processing
+        <span className="text-zinc-300 font-medium">
+          FFmpeg.wasm ({multiThreadReady ? 'Multi-Threaded' : 'Single-Threaded'} • WORKERFS)
+        </span>{' '}
+        • 100% local browser processing
       </footer>
     </>
   );

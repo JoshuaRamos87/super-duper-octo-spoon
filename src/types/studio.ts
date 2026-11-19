@@ -1,6 +1,7 @@
 export type OutputMode = 'target' | 'quality' | 'gif' | 'audio';
 export type EnginePreference = 'auto' | 'webcodecs' | 'ffmpeg';
 export type EngineUsed = 'webcodecs' | 'ffmpeg' | 'canvas';
+export type EncodingPreset = 'ultrafast' | 'veryfast' | 'fast';
 export type QualitySubMode = 'copy' | 'crf';
 export type AnimFormat = 'gif' | 'webp';
 export type AnimMotion = 'normal' | 'reverse' | 'boomerang';
@@ -74,6 +75,7 @@ export interface ExportSettings {
   audioExtractBitrate: 128 | 192 | 256 | 320;
 
   // Shared Video & Audio adjustments
+  encodingPreset: EncodingPreset;
   resolution: ResolutionOption;
   fpsCap: FpsCapOption;
   speed: number;
@@ -192,6 +194,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   audioExtractFormat: 'mp3',
   audioExtractBitrate: 192,
 
+  encodingPreset: 'veryfast',
   resolution: 'original',
   fpsCap: 'original',
   speed: 1,

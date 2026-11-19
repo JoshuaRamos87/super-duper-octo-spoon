@@ -1,4 +1,4 @@
-import type { CustomPreset, ExportSettings, PlatformPreset } from '../types/studio';
+import { DEFAULT_EXPORT_SETTINGS, type CustomPreset, type ExportSettings, type PlatformPreset } from '../types/studio';
 
 const CUSTOM_PRESETS_KEY = 'clipshrink_custom_presets_v1';
 
@@ -54,10 +54,15 @@ export function loadCustomPresets(): CustomPreset[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (item): item is CustomPreset =>
-        Boolean(item && typeof item.id === 'string' && typeof item.name === 'string' && item.settings)
-    );
+    return parsed
+      .filter(
+        (item): item is CustomPreset =>
+          Boolean(item && typeof item.id === 'string' && typeof item.name === 'string' && item.settings)
+      )
+      .map((item) => ({
+        ...item,
+        settings: { ...DEFAULT_EXPORT_SETTINGS, ...item.settings },
+      }));
   } catch {
     return [];
   }
