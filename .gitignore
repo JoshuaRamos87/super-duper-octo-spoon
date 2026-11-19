@@ -1,0 +1,6 @@
+node_modules/
+dist/
+public/ffmpeg/
+.vite/
+*.local
+.DS_Store
